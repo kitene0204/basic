@@ -25,7 +25,6 @@
       font-family: 'BMJUA', sans-serif;
     }
     
-    /* 모달 애니메이션 부드럽게 */
     @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
     @keyframes zoomIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
     .fade-in { animation: fadeIn 0.2s ease-out forwards; }
@@ -42,9 +41,9 @@
       <div class="flex items-center justify-between w-full md:w-auto gap-4">
         <div class="flex items-center gap-3">
           <h1 class="text-3xl tracking-wide title-font">기초학력 지도 달력</h1>
-          <!-- 클라우드 연결 상태 표시 -->
-          <span id="cloud-status" class="hidden sm:block text-xs px-2 py-1 rounded-full bg-gray-300/40 text-gray-50">
-            연결 중...
+          <!-- 연결 상태 표시 -->
+          <span id="cloud-status" class="hidden sm:block text-xs px-2 py-1 rounded-full bg-yellow-400/90 text-white shadow-sm">
+            로컬 저장 모드 (기기에 저장됨)
           </span>
         </div>
         <!-- 명단 설정 버튼 -->
@@ -200,122 +199,47 @@
   </div>
 
   <script type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-    import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-    import { getFirestore, collection, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+    // =========================================================================
+    // 1. 상태 변수 및 로컬 스토리지 데이터 불러오기 (최우선 실행)
+    // =========================================================================
+    const LOCAL_RECORDS_KEY = 'edu_calendar_records_v1';
+    const LOCAL_STUDENTS_KEY = 'edu_calendar_students_v1';
 
-    // 파이어베이스 초기화 (클라우드 저장소)
-    let firebaseConfig = {};
-    try {
-      firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
-    } catch (e) {
-      console.error("Firebase config parse error");
-    }
-    const app = initializeApp(firebaseConfig);
-    const auth = getAuth(app);
-    const db = getFirestore(app);
-    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+    let currentDate = new Date();
+    let selectedDate = null;
+    let db = null;
+    let currentUser = null;
+    let appId = 'my-calendar-app';
 
-    // 학생 명단 (기본값 설정 - 이제 동적으로 변함)
-    window.STUDENTS = {
+    // 파이어베이스 접속이 안 되더라도 저장된 기록을 브라우저(기기)에서 불러옵니다.
+    window.STUDENTS = JSON.parse(localStorage.getItem(LOCAL_STUDENTS_KEY)) || {
       midLevel: ['이솔빛나', '황혜리'],
       topPriority: ['전성후', '강주연']
     };
+    let records = JSON.parse(localStorage.getItem(LOCAL_RECORDS_KEY)) || {};
 
-    // 상태 관리 변수
-    let currentUser = null;
-    let currentDate = new Date();
-    let records = {};
-    let selectedDate = null;
-    let unsubscribeSnapshot = null;
-    let unsubscribeSettingsSnapshot = null;
-
-    // 1. 인증 및 파이어베이스 설정
-    async function initAuth() {
-      try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
-      } catch (error) {
-        console.error("인증 실패:", error);
-      }
-    }
-
-    onAuthStateChanged(auth, (user) => {
-      currentUser = user;
-      const statusEl = document.getElementById('cloud-status');
-      
-      if (user) {
-        statusEl.textContent = '클라우드 연동됨';
-        statusEl.className = 'hidden sm:block text-xs px-2 py-1 rounded-full bg-green-300/40 text-green-50';
-        
-        // 데이터(지도 기록) 실시간 동기화
-        const recordsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'records');
-        unsubscribeSnapshot = onSnapshot(recordsRef, (snapshot) => {
-          records = {};
-          snapshot.forEach((doc) => {
-            records[doc.id] = doc.data();
-          });
-          renderCalendar();
-          if (selectedDate) renderModalContent();
-        }, (error) => {
-          console.error("데이터 불러오기 실패:", error);
-        });
-
-        // 학생 명단(설정) 실시간 동기화
-        const settingsRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'students');
-        unsubscribeSettingsSnapshot = onSnapshot(settingsRef, (docSnap) => {
-          if (docSnap.exists()) {
-            window.STUDENTS = docSnap.data();
-          } else {
-            // 초기 데이터가 없으면 현재 기본 명단을 저장해둡니다.
-            saveStudentsSettings();
-          }
-          
-          if (!document.getElementById('settings-modal').classList.contains('hidden')) {
-            renderSettingsModalContent();
-          }
-          if (selectedDate) renderModalContent(); // 달력에서 팝업이 열려있다면 새로고침
-        }, (error) => {
-          console.error("설정 불러오기 실패:", error);
-        });
-
-      } else {
-        statusEl.textContent = '연결 중...';
-        statusEl.className = 'hidden sm:block text-xs px-2 py-1 rounded-full bg-gray-300/40 text-gray-50';
-        if (unsubscribeSnapshot) unsubscribeSnapshot();
-        if (unsubscribeSettingsSnapshot) unsubscribeSettingsSnapshot();
-      }
-    });
-
-    initAuth();
-
-    // 유틸리티 함수: 'YYYY-MM-DD' 포맷
+    // 유틸리티 함수
     const formatDateString = (y, m, d) => {
       return `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
     };
 
-    // 2. 달력 렌더링 함수
-    function renderCalendar() {
+    // =========================================================================
+    // 2. 핵심 UI 렌더링 함수 (무조건 화면부터 그립니다)
+    // =========================================================================
+    window.renderCalendar = function() {
       const year = currentDate.getFullYear();
       const month = currentDate.getMonth();
-      
       const firstDayOfMonth = new Date(year, month, 1).getDay();
       const daysInMonth = new Date(year, month + 1, 0).getDate();
       const today = new Date();
 
       document.getElementById('current-month-display').textContent = `${year}년 ${month + 1}월`;
-
       let daysHtml = '';
       
-      // 빈 앞자리 칸
       for (let i = 0; i < firstDayOfMonth; i++) {
         daysHtml += `<div class="border border-transparent rounded-xl p-2 bg-gray-50 min-h-[80px] md:min-h-[100px]"></div>`;
       }
 
-      // 실제 날짜 칸
       for (let i = 1; i <= daysInMonth; i++) {
         const dateStr = formatDateString(year, month, i);
         const dayRecord = records[dateStr];
@@ -353,125 +277,43 @@
           </div>
         `;
       }
-
       document.getElementById('calendar-days').innerHTML = daysHtml;
-    }
-
-    // 3. 기록 모달 열기/닫기 및 콘텐츠 렌더링
-    window.openModal = (dateStr) => {
-      selectedDate = dateStr;
-      document.getElementById('date-modal').classList.remove('hidden');
-      renderModalContent();
     };
 
-    window.closeModal = () => {
-      selectedDate = null;
-      document.getElementById('date-modal').classList.add('hidden');
-    };
-
-    function renderModalContent() {
+    window.renderModalContent = function() {
       if (!selectedDate) return;
-      
       const parts = selectedDate.split('-');
       document.getElementById('modal-date-title').textContent = `${parts[0]}년 ${parts[1]}월 ${parts[2]}일`;
-
       const dayRecord = records[selectedDate] || { midLevel: [], topPriority: [] };
 
-      // 중위권 버튼 렌더링
+      // 중위권
       let midHtml = '';
       if(window.STUDENTS.midLevel.length === 0) {
-        midHtml = `<div class="col-span-2 text-center text-sm text-gray-400 py-2">등록된 학생이 없습니다. 설정에서 추가해주세요.</div>`;
+        midHtml = `<div class="col-span-2 text-center text-sm text-gray-400 py-2">설정에서 추가해주세요.</div>`;
       } else {
         window.STUDENTS.midLevel.forEach(name => {
           const isSelected = dayRecord.midLevel && dayRecord.midLevel.includes(name);
-          const btnClass = isSelected 
-            ? 'border-sky-300 bg-sky-300 text-white shadow-md' 
-            : 'border-gray-200 hover:border-sky-200 text-gray-600 bg-white';
-          
-          midHtml += `
-            <button onclick="toggleStudent('midLevel', '${name}')" class="p-3 rounded-xl border-2 transition-all text-lg tracking-wide ${btnClass}">
-              ${name}
-            </button>
-          `;
+          const btnClass = isSelected ? 'border-sky-300 bg-sky-300 text-white shadow-md' : 'border-gray-200 hover:border-sky-200 text-gray-600 bg-white';
+          midHtml += `<button onclick="toggleStudent('midLevel', '${name}')" class="p-3 rounded-xl border-2 transition-all text-lg tracking-wide ${btnClass}">${name}</button>`;
         });
       }
       document.getElementById('modal-mid-buttons').innerHTML = midHtml;
 
-      // 1순위 버튼 렌더링
+      // 1순위
       let topHtml = '';
       if(window.STUDENTS.topPriority.length === 0) {
-        topHtml = `<div class="col-span-2 text-center text-sm text-gray-400 py-2">등록된 학생이 없습니다. 설정에서 추가해주세요.</div>`;
+        topHtml = `<div class="col-span-2 text-center text-sm text-gray-400 py-2">설정에서 추가해주세요.</div>`;
       } else {
         window.STUDENTS.topPriority.forEach(name => {
           const isSelected = dayRecord.topPriority && dayRecord.topPriority.includes(name);
-          const btnClass = isSelected 
-            ? 'border-rose-300 bg-rose-300 text-white shadow-md' 
-            : 'border-gray-200 hover:border-rose-200 text-gray-600 bg-white';
-          
-          topHtml += `
-            <button onclick="toggleStudent('topPriority', '${name}')" class="p-3 rounded-xl border-2 transition-all text-lg tracking-wide ${btnClass}">
-              ${name}
-            </button>
-          `;
+          const btnClass = isSelected ? 'border-rose-300 bg-rose-300 text-white shadow-md' : 'border-gray-200 hover:border-rose-200 text-gray-600 bg-white';
+          topHtml += `<button onclick="toggleStudent('topPriority', '${name}')" class="p-3 rounded-xl border-2 transition-all text-lg tracking-wide ${btnClass}">${name}</button>`;
         });
       }
       document.getElementById('modal-top-buttons').innerHTML = topHtml;
-    }
-
-    // 4. 데이터 토글 (클릭 시 저장)
-    window.toggleStudent = async (type, name) => {
-      if (!selectedDate || !currentUser) return;
-
-      const current = records[selectedDate] || { midLevel: [], topPriority: [] };
-      const typeArray = current[type] || [];
-      const isSelected = typeArray.includes(name);
-
-      const newTypeArray = isSelected
-        ? typeArray.filter((n) => n !== name)
-        : [...typeArray, name];
-
-      const newRecord = {
-        ...current,
-        [type]: newTypeArray,
-      };
-
-      // 즉각적인 UI 반영 (Optimistic Update)
-      records[selectedDate] = newRecord;
-      renderCalendar();
-      renderModalContent();
-
-      // 파이어베이스(클라우드)에 실제 저장
-      try {
-        const docRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'records', selectedDate);
-        await setDoc(docRef, newRecord);
-      } catch (error) {
-        console.error("데이터 저장 실패:", error);
-      }
     };
 
-    // 5. 달 이동 이벤트 연결
-    document.getElementById('btn-prev-month').addEventListener('click', () => {
-      currentDate = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1);
-      renderCalendar();
-    });
-
-    document.getElementById('btn-next-month').addEventListener('click', () => {
-      currentDate = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1);
-      renderCalendar();
-    });
-
-    // 6. 설정 모달 열기/닫기/수정 및 파이어베이스 저장 기능
-    window.openSettingsModal = () => {
-      document.getElementById('settings-modal').classList.remove('hidden');
-      renderSettingsModalContent();
-    };
-
-    window.closeSettingsModal = () => {
-      document.getElementById('settings-modal').classList.add('hidden');
-    };
-
-    window.renderSettingsModalContent = () => {
-      // 중위권 칩 렌더링
+    window.renderSettingsModalContent = function() {
       const midList = document.getElementById('settings-mid-list');
       midList.innerHTML = window.STUDENTS.midLevel.map(name => `
         <div class="flex items-center gap-1 bg-sky-100 text-sky-700 px-3 py-1.5 rounded-full text-sm font-sans font-bold tracking-wider">
@@ -482,7 +324,6 @@
         </div>
       `).join('');
 
-      // 1순위 칩 렌더링
       const topList = document.getElementById('settings-top-list');
       topList.innerHTML = window.STUDENTS.topPriority.map(name => `
         <div class="flex items-center gap-1 bg-rose-100 text-rose-700 px-3 py-1.5 rounded-full text-sm font-sans font-bold tracking-wider">
@@ -494,43 +335,155 @@
       `).join('');
     };
 
+    // ★ 가장 먼저 화면을 무조건 그립니다! ★
+    renderCalendar();
+
+    // =========================================================================
+    // 3. 사용자 상호작용 (클릭) 이벤트
+    // =========================================================================
+    window.openModal = (dateStr) => { selectedDate = dateStr; document.getElementById('date-modal').classList.remove('hidden'); renderModalContent(); };
+    window.closeModal = () => { selectedDate = null; document.getElementById('date-modal').classList.add('hidden'); };
+    window.openSettingsModal = () => { document.getElementById('settings-modal').classList.remove('hidden'); renderSettingsModalContent(); };
+    window.closeSettingsModal = () => { document.getElementById('settings-modal').classList.add('hidden'); };
+
+    // 학생 달력 기록 토글
+    window.toggleStudent = async (type, name) => {
+      if (!selectedDate) return;
+      const current = records[selectedDate] || { midLevel: [], topPriority: [] };
+      const typeArray = current[type] || [];
+      const isSelected = typeArray.includes(name);
+
+      const newTypeArray = isSelected ? typeArray.filter((n) => n !== name) : [...typeArray, name];
+      records[selectedDate] = { ...current, [type]: newTypeArray };
+
+      // 1. 기기 로컬 스토리지에 즉시 백업 저장 (무조건 작동)
+      localStorage.setItem(LOCAL_RECORDS_KEY, JSON.stringify(records));
+      renderCalendar();
+      renderModalContent();
+
+      // 2. 파이어베이스 연동 시 클라우드 저장
+      if (db && currentUser) {
+        import("https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js").then(({ doc, setDoc }) => {
+          const docRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'records', selectedDate);
+          setDoc(docRef, records[selectedDate]).catch(e => console.error(e));
+        });
+      }
+    };
+
+    // 학생 명단 추가
     window.addStudent = (type) => {
       const inputId = type === 'midLevel' ? 'new-mid-student' : 'new-top-student';
       const inputEl = document.getElementById(inputId);
       const name = inputEl.value.trim();
       
-      if (!name) return; // 빈 값 방지
-      if (window.STUDENTS[type].includes(name)) {
-        inputEl.value = ''; // 중복 무시
-        return;
-      }
-      
+      if (!name || window.STUDENTS[type].includes(name)) { inputEl.value = ''; return; }
       window.STUDENTS[type].push(name);
       inputEl.value = '';
       
+      // 기기 로컬 스토리지에 즉시 백업 저장
+      localStorage.setItem(LOCAL_STUDENTS_KEY, JSON.stringify(window.STUDENTS));
       renderSettingsModalContent();
-      saveStudentsSettings();
+      syncStudentsToCloud();
     };
 
+    // 학생 명단 삭제
     window.removeStudent = (type, name) => {
       window.STUDENTS[type] = window.STUDENTS[type].filter(n => n !== name);
+      localStorage.setItem(LOCAL_STUDENTS_KEY, JSON.stringify(window.STUDENTS)); // 기기 백업
       renderSettingsModalContent();
-      saveStudentsSettings();
+      syncStudentsToCloud();
     };
 
-    window.saveStudentsSettings = async () => {
-      if (!currentUser) return;
-      try {
-        const docRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'settings', 'students');
-        await setDoc(docRef, window.STUDENTS);
-      } catch (error) {
-        console.error("명단 저장 실패:", error);
+    // 파이어베이스 연동 시 클라우드 명단 동기화
+    window.syncStudentsToCloud = () => {
+      if (db && currentUser) {
+        import("https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js").then(({ doc, setDoc }) => {
+          const docRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'settings', 'students');
+          setDoc(docRef, window.STUDENTS).catch(e => console.error(e));
+        });
       }
+    }
+
+    document.getElementById('btn-prev-month').addEventListener('click', () => {
+      currentDate = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1);
+      renderCalendar();
+    });
+
+    document.getElementById('btn-next-month').addEventListener('click', () => {
+      currentDate = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1);
+      renderCalendar();
+    });
+
+    // =========================================================================
+    // 4. 클라우드 (파이어베이스) 동적 연결 시도 (에러가 나도 화면은 멈추지 않음)
+    // =========================================================================
+    const myFirebaseConfig = {
+      apiKey: "", authDomain: "", projectId: "", storageBucket: "", messagingSenderId: "", appId: ""
     };
 
-    // 초기 달력 렌더링
-    renderCalendar();
+    async function initCloud() {
+      let firebaseConfig = myFirebaseConfig;
+      let isCanvasEnvironment = typeof __firebase_config !== 'undefined';
+      
+      if (isCanvasEnvironment) {
+        try { firebaseConfig = JSON.parse(__firebase_config); } catch (e) {}
+        appId = typeof __app_id !== 'undefined' ? __app_id : appId;
+      }
 
+      // 파이어베이스 주소가 아예 없으면 여기서 멈춥니다. (로컬 스토리지 모드 유지)
+      if (!firebaseConfig.apiKey) return;
+
+      try {
+        // 네트워크 차단 상황을 대비해 모듈을 동적으로(비동기) 불러옵니다.
+        const { initializeApp } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js");
+        const { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js");
+        const { getFirestore, collection, doc, onSnapshot } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js");
+
+        const app = initializeApp(firebaseConfig);
+        auth = getAuth(app);
+        db = getFirestore(app);
+
+        if (isCanvasEnvironment && typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+
+        onAuthStateChanged(auth, (user) => {
+          currentUser = user;
+          const statusEl = document.getElementById('cloud-status');
+          
+          if (user) {
+            statusEl.textContent = '클라우드 연동됨';
+            statusEl.className = 'hidden sm:block text-xs px-2 py-1 rounded-full bg-green-500/90 text-white shadow-sm';
+            
+            // 데이터 동기화
+            onSnapshot(collection(db, 'artifacts', appId, 'users', user.uid, 'records'), (snapshot) => {
+              snapshot.forEach((doc) => { records[doc.id] = doc.data(); });
+              localStorage.setItem(LOCAL_RECORDS_KEY, JSON.stringify(records)); // 클라우드 내용 로컬 덮어쓰기
+              renderCalendar();
+              if (selectedDate) renderModalContent();
+            });
+
+            onSnapshot(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'students'), (docSnap) => {
+              if (docSnap.exists()) {
+                window.STUDENTS = docSnap.data();
+                localStorage.setItem(LOCAL_STUDENTS_KEY, JSON.stringify(window.STUDENTS));
+              } else {
+                syncStudentsToCloud(); // 초기 데이터 클라우드 업로드
+              }
+              if (!document.getElementById('settings-modal').classList.contains('hidden')) renderSettingsModalContent();
+              if (selectedDate) renderModalContent();
+            });
+          }
+        });
+
+      } catch (error) {
+        console.warn("클라우드 연결 실패. 로컬 모드로 작동합니다.", error);
+      }
+    }
+
+    initCloud();
   </script>
 </body>
 </html>
