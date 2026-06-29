@@ -43,7 +43,7 @@
           <h1 class="text-3xl tracking-wide title-font">기초학력 지도 달력</h1>
           <!-- 연결 상태 표시 -->
           <span id="cloud-status" class="hidden sm:block text-xs px-2 py-1 rounded-full bg-yellow-400/90 text-white shadow-sm">
-            로컬 저장 모드 (기기에 저장됨)
+            로컬 저장 모드 (기기에만 저장됨)
           </span>
         </div>
         <!-- 명단 설정 버튼 -->
@@ -106,7 +106,7 @@
         <div class="pb-2 text-sky-400">토</div>
       </div>
 
-      <!-- 날짜 그리드 (여기가 문제의 원인이었던 부분입니다!) -->
+      <!-- 날짜 그리드 -->
       <div id="calendar-days" class="grid grid-cols-7 gap-2 flex-1">
         <!-- JS로 날짜 셀들이 생성됩니다 -->
       </div>
@@ -227,7 +227,7 @@
       
       <div class="p-4 bg-gray-50 border-t shrink-0">
         <button onclick="closeSettingsModal()" class="w-full py-3 bg-gray-700 text-white rounded-xl text-lg hover:bg-gray-600 transition-colors tracking-wide focus:outline-none">
-          저장 및 닫기
+          닫기
         </button>
       </div>
     </div>
@@ -245,7 +245,7 @@
     let selectedDate = null;
     let db = null;
     let currentUser = null;
-    let appId = 'my-calendar-app';
+    let appId = 'my-calendar-app'; // 파이어베이스 설정 시 덮어써집니다.
 
     window.STUDENTS = JSON.parse(localStorage.getItem(LOCAL_STUDENTS_KEY)) || {
       midLevel: ['이솔빛나', '황혜리'],
@@ -410,7 +410,7 @@
     renderCalendar();
 
     // =========================================================================
-    // 3. 이벤트 핸들러
+    // 3. 이벤트 핸들러 및 데이터 토글
     // =========================================================================
     window.openModal = (dateStr) => { selectedDate = dateStr; document.getElementById('date-modal').classList.remove('hidden'); renderModalContent(); };
     window.closeModal = () => { selectedDate = null; document.getElementById('date-modal').classList.add('hidden'); };
@@ -441,9 +441,10 @@
       renderCalendar();
       renderModalContent();
 
+      // 어디서든 데이터를 공유하기 위해 'public' 공용 폴더 경로를 사용합니다.
       if (db && currentUser) {
         import("https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js").then(({ doc, setDoc }) => {
-          const docRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'records', selectedDate);
+          const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'records', selectedDate);
           setDoc(docRef, records[selectedDate]).catch(e => console.error(e));
         });
       }
@@ -473,7 +474,7 @@
     window.syncStudentsToCloud = () => {
       if (db && currentUser) {
         import("https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js").then(({ doc, setDoc }) => {
-          const docRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'settings', 'students');
+          const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'students');
           setDoc(docRef, window.STUDENTS).catch(e => console.error(e));
         });
       }
@@ -482,7 +483,7 @@
     window.syncConfigToCloud = () => {
       if (db && currentUser) {
         import("https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js").then(({ doc, setDoc }) => {
-          const docRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'settings', 'config');
+          const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'config');
           setDoc(docRef, window.APP_SETTINGS).catch(e => console.error(e));
         });
       }
@@ -499,10 +500,17 @@
     });
 
     // =========================================================================
-    // 4. 클라우드 연동
+    // 4. 클라우드 연동 (가장 중요한 부분!)
+    // 이곳에 발급받으신 파이어베이스 설정값을 복사해서 넣어주세요.
     // =========================================================================
     const myFirebaseConfig = {
-      apiKey: "", authDomain: "", projectId: "", storageBucket: "", messagingSenderId: "", appId: ""
+      apiKey: "AIzaSyCOg6NqvftiFAqbcZ0dQeVkvEclF8W0hz4",
+      authDomain: "basic-2841a.firebaseapp.com",
+      projectId: "basic-2841a",
+      storageBucket: "basic-2841a.firebasestorage.app",
+      messagingSenderId: "418594452810",
+      appId: "1:418594452810:web:56b5696aeadad3196efdb3",
+      measurementId: "G-6H8SBTYETY"
     };
 
     async function initCloud() {
@@ -512,9 +520,11 @@
       if (isCanvasEnvironment) {
         try { firebaseConfig = JSON.parse(__firebase_config); } catch (e) {}
         appId = typeof __app_id !== 'undefined' ? __app_id : appId;
+      } else if (firebaseConfig.projectId) {
+        appId = firebaseConfig.projectId; // 깃허브에서는 프로젝트 ID를 고유 키로 사용합니다.
       }
 
-      if (!firebaseConfig.apiKey) return;
+      if (!firebaseConfig.apiKey) return; // 설정값이 비어있으면 로컬 모드로 작동
 
       try {
         const { initializeApp } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js");
@@ -528,7 +538,7 @@
         if (isCanvasEnvironment && typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
           await signInWithCustomToken(auth, __initial_auth_token);
         } else {
-          await signInAnonymously(auth);
+          await signInAnonymously(auth); // 반드시 파이어베이스 인증에서 '익명 로그인'을 켜주세요!
         }
 
         onAuthStateChanged(auth, (user) => {
@@ -536,28 +546,40 @@
           const statusEl = document.getElementById('cloud-status');
           
           if (user) {
-            statusEl.textContent = '클라우드 연동됨';
+            statusEl.textContent = '클라우드 연동됨 🟢';
             statusEl.className = 'hidden sm:block text-xs px-2 py-1 rounded-full bg-green-500/90 text-white shadow-sm';
             
-            onSnapshot(collection(db, 'artifacts', appId, 'users', user.uid, 'records'), (snapshot) => {
-              snapshot.forEach((doc) => { records[doc.id] = doc.data(); });
-              localStorage.setItem(LOCAL_RECORDS_KEY, JSON.stringify(records));
+            // 공용 데이터 경로(public/data)를 구독하여 기기가 달라도 동일한 데이터를 불러옵니다.
+            onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'records'), (snapshot) => {
+              if (snapshot.empty && Object.keys(records).length > 0) {
+                // 기존 기기에 저장된 기록이 있고, 클라우드가 비어있다면 -> 클라우드로 자동 일괄 업로드(백업)
+                import("https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js").then(({ doc, setDoc }) => {
+                  Object.entries(records).forEach(([dateStr, recordData]) => {
+                    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'records', dateStr);
+                    setDoc(docRef, recordData).catch(e => console.error(e));
+                  });
+                });
+              } else {
+                // 클라우드 데이터를 다운로드하여 로컬에 반영
+                snapshot.forEach((doc) => { records[doc.id] = doc.data(); });
+                localStorage.setItem(LOCAL_RECORDS_KEY, JSON.stringify(records));
+              }
               renderCalendar();
               if (selectedDate) renderModalContent();
             });
 
-            onSnapshot(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'students'), (docSnap) => {
+            onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'students'), (docSnap) => {
               if (docSnap.exists()) {
                 window.STUDENTS = docSnap.data();
                 localStorage.setItem(LOCAL_STUDENTS_KEY, JSON.stringify(window.STUDENTS));
               } else {
-                syncStudentsToCloud();
+                syncStudentsToCloud(); // 최초 데이터 밀어넣기
               }
               if (!document.getElementById('settings-modal').classList.contains('hidden')) renderSettingsModalContent();
               if (selectedDate) renderModalContent();
             });
             
-            onSnapshot(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'config'), (docSnap) => {
+            onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'config'), (docSnap) => {
               if (docSnap.exists()) {
                 window.APP_SETTINGS = docSnap.data();
                 localStorage.setItem(LOCAL_SETTINGS_KEY, JSON.stringify(window.APP_SETTINGS));
